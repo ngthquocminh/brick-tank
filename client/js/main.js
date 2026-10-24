@@ -107,6 +107,7 @@ function bulletBlocked(x, y) {
 createInput((h, f) => {
   held = h;
   fire = f;
+  predictor.press(h ? h - 1 : null, f);
   if (state === 'alive') sendInput();
 }, () => {
   if (state === 'dead' || state === 'full') join();

@@ -10,6 +10,14 @@ export class Predictor {
     this.history = [];
     this.seq = 0;
     this.k = 0;
+    this.tap = null;
+    this.fireTap = false;
+  }
+
+  // Latches a press so a tap shorter than one tick still acts (mirrors the server's tap).
+  press(held, fire) {
+    if (held !== null) this.tap = held;
+    if (fire) this.fireTap = true;
   }
 
   reset(own) {
@@ -27,6 +35,10 @@ export class Predictor {
   }
 
   localTick(held, fire, canFire, blocked, bulletBlocked) {
+    held = held ?? this.tap;
+    if (this.tank.cd === 0) this.tap = null;
+    fire = fire || this.fireTap;
+    this.fireTap = false;
     const entry = { seq: this.seq, k: ++this.k, held, fired: false };
     stepMove(this.tank, held, blocked);
     const b = this.bullet;

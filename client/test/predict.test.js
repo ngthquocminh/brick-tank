@@ -55,3 +55,16 @@ test('history is capped while no snapshots arrive', () => {
   const p = walkUp(1000);
   assert.ok(p.history.length <= 200);
 });
+
+test('tap shorter than a tick still turns and fires', () => {
+  const p = new Predictor();
+  p.reset({ x: 10, y: 10, dir: DIR.UP, cd: 0 });
+  p.setSeq(1);
+  p.press(DIR.RIGHT, true);
+  p.localTick(null, false, true, free, free);
+  assert.equal(p.tank.dir, DIR.RIGHT);
+  assert.ok(p.bullet);
+  p.localTick(null, false, true, free, free);
+  p.localTick(null, false, true, free, free);
+  assert.deepEqual(pos(p), [10, 10]);
+});

@@ -16,6 +16,9 @@ pub struct Tank {
     pub mv: TankMove,
     pub held: Option<Dir>,
     pub fire: bool,
+    /// A press seen since the tank last acted, kept so taps shorter than a tick still count.
+    pub tap: Option<Dir>,
+    pub fire_tap: bool,
     pub kills: u16,
     pub born_tick: u64,
     pub invuln_until: u64,
@@ -110,6 +113,8 @@ impl World {
             let t = &mut self.tanks[i];
             t.held = held;
             t.fire = fire;
+            t.tap = held.or(t.tap);
+            t.fire_tap |= fire;
             t.last_input_tick = self.tick;
         }
     }
@@ -221,6 +226,8 @@ impl World {
             mv: TankMove { x, y, dir, cd: 0 },
             held: None,
             fire: false,
+            tap: None,
+            fire_tap: false,
             kills: 0,
             born_tick: self.tick,
             invuln_until: 0,
@@ -277,7 +284,7 @@ impl World {
     fn move_tanks(&mut self) {
         let desired: Vec<TankMove> = self.tanks.iter().map(|t| {
             let mut m = t.mv;
-            step_move(&mut m, t.held, |x, y| self.box_blocked_static(x, y));
+            step_move(&mut m, t.held.or(t.tap), |x, y| self.box_blocked_static(x, y));
             m
         }).collect();
         for i in 0..self.tanks.len() {
@@ -298,13 +305,18 @@ impl World {
                     want.y = cur.y;
                 }
             }
+            if cur.cd == 0 {
+                self.tanks[i].tap = None;
+            }
             self.tanks[i].mv = want;
         }
     }
 
     fn fire_bullets(&mut self) {
         for t in &mut self.tanks {
-            if t.fire && !t.has_bullet && self.tick >= t.invuln_until {
+            let fire = t.fire || t.fire_tap;
+            t.fire_tap = false;
+            if fire && !t.has_bullet && self.tick >= t.invuln_until {
                 let (x, y) = muzzle(t.mv.x, t.mv.y, t.mv.dir);
                 self.bullets.push(Bullet {
                     owner: t.id,
@@ -689,5 +701,35 @@ pub(crate) mod tests {
             w.place("M".into(), x + 3, y, Dir::Up);
             assert_eq!(w.scan_free(&region), Some((x + 6, y)), "seed {seed}");
         }
+    }
+
+    #[test]
+    fn tap_shorter_than_a_tick_still_turns_and_fires() {
+        let mut w = world();
+        let (x, y) = free_strip(&w, 32, 3);
+        let id = w.place("A".into(), x, y, Dir::Up);
+        w.set_input(id, Some(Dir::Right), true);
+        w.set_input(id, None, false);
+        w.step();
+        assert_eq!(w.tank(id).unwrap().mv.dir, Dir::Right);
+        assert_eq!(w.bullets().len(), 1);
+    }
+
+    #[test]
+    fn tap_during_cooldown_waits_for_the_tank() {
+        let mut w = world();
+        let (x, y) = free_strip(&w, 32, 3);
+        let id = w.place("A".into(), x, y, Dir::Right);
+        w.set_input(id, Some(Dir::Right), false);
+        w.step();
+        assert_eq!((w.tank(id).unwrap().mv.x, w.tank(id).unwrap().mv.cd), (x + 1, 1));
+        w.set_input(id, Some(Dir::Right), false);
+        w.set_input(id, None, false);
+        w.step();
+        w.step();
+        assert_eq!(w.tank(id).unwrap().mv.x, x + 2);
+        w.step();
+        w.step();
+        assert_eq!(w.tank(id).unwrap().mv.x, x + 2);
     }
 }
