@@ -58,7 +58,7 @@ pub struct SnapshotMsg {
     pub tick: u32,
     pub own: OwnView,
     pub ack_seq: u16,
-    pub ack_ticks: u8,
+    pub ack_ticks: u16,
     pub bounds: Bounds,
     pub tanks: Vec<TankView>,
     pub bullets: Vec<BulletView>,
@@ -160,7 +160,7 @@ pub fn encode_snapshot(
     tick: u32,
     own: &OwnView,
     ack_seq: u16,
-    ack_ticks: u8,
+    ack_ticks: u16,
     bounds: &Bounds,
     tanks: &[TankView],
     bullets: &[BulletView],
@@ -173,7 +173,7 @@ pub fn encode_snapshot(
     out.push(own.cd);
     out.extend_from_slice(&own.kills.to_le_bytes());
     out.extend_from_slice(&ack_seq.to_le_bytes());
-    out.push(ack_ticks);
+    out.extend_from_slice(&ack_ticks.to_le_bytes());
     for v in [bounds.l, bounds.t, bounds.r, bounds.b] {
         out.extend_from_slice(&(v as u16).to_le_bytes());
     }
@@ -272,7 +272,7 @@ pub fn decode_server(buf: &[u8]) -> Result<ServerMsg, ProtoError> {
                 cd: r.u8()?,
                 kills: r.u16()?,
             };
-            let (ack_seq, ack_ticks) = (r.u16()?, r.u8()?);
+            let (ack_seq, ack_ticks) = (r.u16()?, r.u16()?);
             let bounds = Bounds { l: r.u16()? as i32, t: r.u16()? as i32, r: r.u16()? as i32, b: r.u16()? as i32 };
             let mut tanks = Vec::new();
             for _ in 0..r.u8()? {
@@ -373,7 +373,7 @@ mod tests {
         ];
         let mut out = Vec::new();
         encode_snapshot(&mut out, 123456, &own, 77, 3, &bounds, &tanks, &bullets);
-        assert_eq!(out.len(), 26 + 2 * 9 + 3 * 3);
+        assert_eq!(out.len(), 27 + 2 * 9 + 3 * 3);
         let expected = SnapshotMsg { tick: 123456, own, ack_seq: 77, ack_ticks: 3, bounds, tanks: tanks.to_vec(), bullets: bullets.to_vec() };
         assert_eq!(decode_server(&out), Ok(ServerMsg::Snapshot(expected)));
     }

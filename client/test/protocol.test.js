@@ -11,7 +11,7 @@ test('encodeJoin golden bytes', () => {
 });
 
 test('snapshot decodes to absolute positions', () => {
-  const b = [0x11, 1, 0, 0, 0, 100, 0, 200, 0, 0b10101, 1, 7, 0, 9, 0, 3,
+  const b = [0x11, 1, 0, 0, 0, 100, 0, 200, 0, 0b10101, 1, 7, 0, 9, 0, 3, 1,
     0x84, 3, 0x85, 3, 0xe8, 3, 0xe9, 3,
     1, 42, 0, 0, 0, 10, 20, 2, 5, 0,
     1, 9, 8, 1];
@@ -19,7 +19,7 @@ test('snapshot decodes to absolute positions', () => {
   assert.equal(m.type, 'snapshot');
   assert.equal(m.tick, 1);
   assert.deepEqual([m.ownX, m.ownY, m.ownDir, m.ownInvuln, m.ownAfkWarn, m.ownHasBullet], [100, 200, 1, true, false, true]);
-  assert.deepEqual([m.ownCd, m.ownKills, m.ackSeq, m.ackTicks], [1, 7, 9, 3]);
+  assert.deepEqual([m.ownCd, m.ownKills, m.ackSeq, m.ackTicks], [1, 7, 9, 259]);
   assert.deepEqual(m.bounds, { l: 900, t: 901, r: 1000, b: 1001 });
   assert.deepEqual(m.tanks, [{ id: 42, x: 85, y: 195, dir: 2, invuln: false, kills: 5 }]);
   assert.deepEqual(m.bullets, [{ x: 84, y: 183, own: true }]);

@@ -261,7 +261,7 @@ fn send_snapshot(world: &World, c: &mut Client) {
         cd: t.mv.cd,
         kills: t.kills,
     };
-    let ack_ticks = (world.tick + 1).saturating_sub(c.seq_start_tick).min(255) as u8;
+    let ack_ticks = (world.tick + 1).saturating_sub(c.seq_start_tick).min(u16::MAX as u64) as u16;
     let mut out = Vec::with_capacity(64 + 9 * tanks.len() + 3 * bullets.len());
     encode_snapshot(&mut out, world.tick as u32, &own, c.last_seq, ack_ticks, &world.bounds, &tanks, &bullets);
     c.out.snapshot.send_replace(out.into());
@@ -435,6 +435,21 @@ mod tests {
         }
         let s = snapshot(&srx);
         assert_eq!((s.ack_seq, s.ack_ticks), (7, 3));
+    }
+
+    #[test]
+    fn ack_not_saturated_at_255() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut g = game(&dir, 10);
+        let (srx, _r) = connect(&mut g, 1, 1024);
+        join(&mut g, 1, "A");
+        g.tick();
+        input(&mut g, 1, 7);
+        for _ in 0..300 {
+            g.tick();
+        }
+        let s = snapshot(&srx);
+        assert_eq!((s.ack_seq, s.ack_ticks as u32), (7, 300));
     }
 
     #[test]

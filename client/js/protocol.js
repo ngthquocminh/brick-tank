@@ -28,7 +28,7 @@ export function decode(buf) {
       const m = { type: 'snapshot', tick: u32(), ownX: u16(), ownY: u16() };
       const f = u8();
       Object.assign(m, { ownDir: f & 3, ownInvuln: !!(f & 4), ownAfkWarn: !!(f & 8), ownHasBullet: !!(f & 16) });
-      Object.assign(m, { ownCd: u8(), ownKills: u16(), ackSeq: u16(), ackTicks: u8() });
+      Object.assign(m, { ownCd: u8(), ownKills: u16(), ackSeq: u16(), ackTicks: u16() });
       m.bounds = { l: u16(), t: u16(), r: u16(), b: u16() };
       const ox = m.ownX - VIEW_HALF - DX_OFFSET, oy = m.ownY - VIEW_HALF - DX_OFFSET;
       m.tanks = [];
