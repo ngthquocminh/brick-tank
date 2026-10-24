@@ -1,0 +1,8 @@
+{
+  "name": "brick-tank",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test client/test/"
+  }
+}

@@ -1,0 +1,31 @@
+services:
+  dev:
+    image: rust:1-bookworm
+    working_dir: /app
+    volumes:
+      - .:/app
+      - cargo-registry:/usr/local/cargo/registry
+      - target:/app/target
+    ports:
+      - "8080:8080"
+    environment:
+      STATIC_DIR: /app/client
+      RECORDS: /app/records.json
+
+  server:
+    build: .
+    ports:
+      - "8080:8080"
+    cpus: 2
+    volumes:
+      - data:/data
+    environment:
+      RECORDS: /data/records.json
+      MAX_PER_IP: ${MAX_PER_IP:-5}
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+    restart: unless-stopped
+
+volumes:
+  cargo-registry:
+  target:
+  data:
