@@ -1,0 +1,74 @@
+:root {
+  --bg: #1b1d1f;
+  --bezel: #2d2f33;
+  --lcd: #9ea792;
+  --on: #1e231a;
+  --btn: #f3d21b;
+  --btn-shade: #b39a0e;
+}
+
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; background: var(--bg); overflow: hidden; }
+body {
+  font: 14px/1.4 ui-monospace, Menlo, Consolas, monospace;
+  color: var(--on);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#app {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+    max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+}
+#game { display: flex; gap: 8px; padding: 10px; background: var(--bezel); border-radius: 12px; }
+#screen { position: relative; }
+canvas { display: block; }
+
+#start {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  padding: 16px; text-align: center; background: rgba(158, 167, 146, 0.92);
+}
+#start[hidden] { display: none; }
+#start h1 { font-size: 28px; letter-spacing: 4px; }
+#start input, #start button {
+  width: min(220px, 80%); padding: 8px 12px;
+  font: inherit; font-size: 20px; letter-spacing: 3px; text-align: center;
+  color: var(--on); background: transparent; border: 3px solid var(--on); border-radius: 0;
+}
+#start input::placeholder { color: rgba(30, 35, 26, 0.45); }
+#start button { color: var(--lcd); background: var(--on); cursor: pointer; }
+#start p { font-size: 12px; opacity: 0.8; }
+
+.pad { display: none; }
+.b {
+  border: 0; border-radius: 50%;
+  background: var(--btn); box-shadow: 0 5px 0 var(--btn-shade);
+  touch-action: none;
+}
+.b.on { transform: translateY(3px); box-shadow: 0 2px 0 var(--btn-shade); }
+body.touch .pad { display: grid; }
+#dpad { grid-template: repeat(3, 56px) / repeat(3, 56px); }
+#dpad .up { grid-area: 1 / 2; }
+#dpad .left { grid-area: 2 / 1; }
+#dpad .right { grid-area: 2 / 3; }
+#dpad .down { grid-area: 3 / 2; }
+#firepad { justify-items: center; gap: 8px; color: var(--btn); font-weight: bold; letter-spacing: 2px; }
+.fire { width: 92px; height: 92px; }
+
+body.touch.portrait #app {
+  display: grid;
+  grid-template: "game game" auto "dpad fire" auto / 1fr 1fr;
+  justify-items: center; align-content: center; gap: 20px;
+}
+body.touch.portrait #game { grid-area: game; flex-direction: column; }
+body.touch.portrait #dpad { grid-area: dpad; }
+body.touch.portrait #firepad { grid-area: fire; }
+body.touch.landscape #app { gap: 16px; }
