@@ -1,4 +1,4 @@
-//! Binary wire protocol (little-endian). See the "Wire Protocol" table in the plan.
+//! Binary wire protocol (little-endian). The byte layouts are documented in docs/protocol.md.
 
 use bytes::Bytes;
 

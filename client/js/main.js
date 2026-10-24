@@ -137,7 +137,7 @@ function overlay(now) {
     return [how, `KILL ${dead.kills}  TIME ${clock(dead.secs)}`, rec, 'FIRE = PLAY'].filter(Boolean);
   }
   if (state === 'full') return ['SERVER FULL', 'FIRE = RETRY'];
-  if (state === 'closed') return ['MAT KET NOI', 'FIRE = RETRY'];
+  if (state === 'closed') return ['DISCONNECTED', 'FIRE = RETRY'];
   if (state === 'connecting' || state === 'joining') return ['...'];
   if (state === 'alive' && snap && snap.ownAfkWarn && blink) return ['AFK?'];
   return null;
