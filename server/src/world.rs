@@ -174,8 +174,22 @@ impl World {
         self.move_tanks();
         self.rebuild_grid();
 
+        self.fire_bullets();
+        deaths.extend(self.resolve_bullets());
+
         let corners: Vec<(i32, i32)> = self.tanks.iter().map(|t| (t.mv.x, t.mv.y)).collect();
         area::update(&mut self.bounds, &area::target(self.tanks.len()), self.tick, &corners);
+        let open = self.bounds;
+        self.bullets.retain(|b| open.contains_cell(b.x, b.y));
+        for t in &mut self.tanks {
+            t.has_bullet = false;
+        }
+        for b in &mut self.bullets {
+            b.fresh = false;
+            if let Some(&i) = self.index.get(&b.owner) {
+                self.tanks[i].has_bullet = true;
+            }
+        }
         self.rebuild_grid();
         deaths
     }
@@ -285,6 +299,100 @@ impl World {
             }
             self.tanks[i].mv = want;
         }
+    }
+
+    fn fire_bullets(&mut self) {
+        for t in &mut self.tanks {
+            if t.fire && !t.has_bullet && self.tick >= t.invuln_until {
+                let (x, y) = muzzle(t.mv.x, t.mv.y, t.mv.dir);
+                self.bullets.push(Bullet {
+                    owner: t.id,
+                    x,
+                    y,
+                    px: x,
+                    py: y,
+                    dir: t.mv.dir,
+                    range_left: BULLET_RANGE,
+                    fresh: true,
+                });
+                t.has_bullet = true;
+            }
+        }
+    }
+
+    /// Moves bullets one cell and applies walls, bullet-vs-bullet, hits and range, in that order.
+    fn resolve_bullets(&mut self) -> Vec<Death> {
+        for b in self.bullets.iter_mut().filter(|b| !b.fresh) {
+            let (dx, dy) = b.dir.delta();
+            (b.px, b.py) = (b.x, b.y);
+            b.x += dx;
+            b.y += dy;
+            b.range_left -= 1;
+        }
+        let (open, map) = (self.bounds, &self.map);
+        self.bullets.retain(|b| open.contains_cell(b.x, b.y) && !map.is_wall(b.x, b.y));
+
+        let mut at: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        for (i, b) in self.bullets.iter().enumerate() {
+            at.entry((b.x, b.y)).or_default().push(i);
+        }
+        let mut gone = vec![false; self.bullets.len()];
+        for (i, b) in self.bullets.iter().enumerate() {
+            if at[&(b.x, b.y)].len() > 1 {
+                gone[i] = true;
+            }
+            if let Some(others) = at.get(&(b.px, b.py)) {
+                for &j in others {
+                    let o = &self.bullets[j];
+                    if j != i && (o.px, o.py) == (b.x, b.y) {
+                        gone[i] = true;
+                        gone[j] = true;
+                    }
+                }
+            }
+        }
+
+        let mut hits: Vec<(u32, u32)> = Vec::new();
+        for (i, b) in self.bullets.iter().enumerate() {
+            if gone[i] {
+                continue;
+            }
+            let mut victim = None;
+            self.grid.query(b.x - 2, b.y - 2, b.x + 1, b.y + 1, |id| {
+                let t = &self.tanks[self.index[&id]];
+                let inside = b.x >= t.mv.x && b.x < t.mv.x + 3 && b.y >= t.mv.y && b.y < t.mv.y + 3;
+                if inside && self.tick >= t.invuln_until {
+                    victim = Some(id);
+                }
+            });
+            if let Some(v) = victim {
+                gone[i] = true;
+                if !hits.iter().any(|&(hv, _)| hv == v) {
+                    hits.push((v, b.owner));
+                }
+            }
+        }
+        let mut keep = gone.iter().map(|g| !g);
+        self.bullets.retain(|b| keep.next().unwrap() && b.range_left > 0);
+
+        for &(victim, owner) in &hits {
+            if owner != victim {
+                if let Some(&i) = self.index.get(&owner) {
+                    self.tanks[i].kills += 1;
+                }
+            }
+        }
+        let names: Vec<Option<Arc<str>>> = hits.iter()
+            .map(|&(_, owner)| self.tank(owner).map(|t| t.name.clone()))
+            .collect();
+        hits.iter().zip(names).filter_map(|(&(victim, owner), killer_name)| {
+            let cause = if owner == victim { Cause::SelfHit } else { Cause::Shot { killer: owner } };
+            let mut d = self.remove(victim, cause)?;
+            if owner != victim {
+                d.killer_name = killer_name;
+            }
+            Some(d)
+        }).collect()
     }
 
     fn rebuild_grid(&mut self) {
@@ -421,5 +529,129 @@ pub(crate) mod tests {
         }
         w.step();
         assert!(!w.is_invulnerable(w.tank(id).unwrap()));
+    }
+
+    fn fire_once(w: &mut World, id: u32) {
+        w.set_input(id, None, true);
+        w.step();
+        w.set_input(id, None, false);
+    }
+
+    #[test]
+    fn bullet_travels_range_then_vanishes() {
+        let mut w = world();
+        let (x, y) = free_strip(&w, 32, 3);
+        let a = w.place("A".into(), x, y, Dir::Right);
+        fire_once(&mut w, a);
+        assert_eq!((w.bullets()[0].x, w.bullets()[0].y), (x + 3, y + 1));
+        for _ in 0..24 {
+            w.step();
+        }
+        assert_eq!(w.bullets().len(), 1);
+        assert_eq!(w.bullets()[0].x, x + 27);
+        w.step();
+        assert!(w.bullets().is_empty());
+        assert!(!w.tank(a).unwrap().has_bullet);
+        fire_once(&mut w, a);
+        assert_eq!(w.bullets().len(), 1);
+    }
+
+    #[test]
+    fn bullet_kills_and_credits() {
+        let mut w = world();
+        let (x, y) = free_strip(&w, 20, 3);
+        let a = w.place("A".into(), x, y, Dir::Right);
+        let b = w.place("B".into(), x + 13, y, Dir::Left);
+        w.set_input(a, None, true);
+        let mut deaths = Vec::new();
+        for _ in 0..15 {
+            deaths.extend(w.step());
+        }
+        assert_eq!(deaths.len(), 1);
+        assert_eq!(deaths[0].id, b);
+        assert_eq!(deaths[0].cause, Cause::Shot { killer: a });
+        assert_eq!(deaths[0].killer_name.as_deref(), Some("A"));
+        assert_eq!(w.tank(a).unwrap().kills, 1);
+    }
+
+    #[test]
+    fn point_blank_kill() {
+        let mut w = world();
+        let (x, y) = free_strip(&w, 8, 3);
+        let a = w.place("A".into(), x, y, Dir::Right);
+        let b = w.place("B".into(), x + 3, y, Dir::Up);
+        w.set_input(a, None, true);
+        let deaths = w.step();
+        assert_eq!(deaths.len(), 1);
+        assert_eq!(deaths[0].id, b);
+    }
+
+    #[test]
+    fn bullets_cancel_head_on() {
+        for gap in [6, 7] {
+            let mut w = world();
+            let (x, y) = free_strip(&w, 16, 3);
+            let a = w.place("A".into(), x, y, Dir::Right);
+            let b = w.place("B".into(), x + 4 + gap, y, Dir::Left);
+            w.set_input(a, None, true);
+            w.set_input(b, None, true);
+            w.step();
+            assert_eq!(w.bullets().len(), 2, "gap {gap}");
+            w.set_input(a, None, false);
+            w.set_input(b, None, false);
+            for _ in 0..20 {
+                assert!(w.step().is_empty(), "gap {gap}");
+            }
+            assert!(w.bullets().is_empty(), "gap {gap}");
+            assert!(w.tank(a).is_some() && w.tank(b).is_some());
+        }
+    }
+
+    #[test]
+    fn invulnerable_tank_is_passed_through() {
+        let mut w = world();
+        let (x, y) = free_strip(&w, 18, 3);
+        let a = w.place("A".into(), x, y, Dir::Right);
+        let f = w.place("F".into(), x + 6, y, Dir::Up);
+        let t = w.place("T".into(), x + 12, y, Dir::Up);
+        let fi = w.index[&f];
+        w.tanks[fi].invuln_until = 1000;
+        w.set_input(a, None, true);
+        let mut deaths = Vec::new();
+        for _ in 0..15 {
+            deaths.extend(w.step());
+        }
+        assert_eq!(deaths.len(), 1);
+        assert_eq!(deaths[0].id, t);
+        assert!(w.tank(f).is_some());
+    }
+
+    #[test]
+    fn invulnerable_tank_cannot_fire() {
+        let mut w = world();
+        let (x, y) = free_strip(&w, 8, 3);
+        let id = w.place("A".into(), x, y, Dir::Right);
+        let i = w.index[&id];
+        w.tanks[i].invuln_until = w.tick + INVULN_TICKS;
+        w.set_input(id, None, true);
+        for _ in 0..59 {
+            w.step();
+            assert!(w.bullets().is_empty());
+        }
+        w.step();
+        assert_eq!(w.bullets().len(), 1);
+    }
+
+    #[test]
+    fn mutual_kill_both_credited() {
+        let mut w = world();
+        let (x, y) = free_strip(&w, 8, 3);
+        let a = w.place("A".into(), x, y, Dir::Right);
+        let b = w.place("B".into(), x + 3, y, Dir::Left);
+        w.set_input(a, None, true);
+        w.set_input(b, None, true);
+        let deaths = w.step();
+        assert_eq!(deaths.len(), 2);
+        assert!(deaths.iter().all(|d| d.kills == 1));
     }
 }
