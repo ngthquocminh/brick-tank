@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
@@ -20,7 +21,7 @@ use tokio::sync::{mpsc, watch};
 use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
 
-use crate::config::RELIABLE_QUEUE;
+use crate::config::{INPUT_RATE_MAX, RELIABLE_QUEUE};
 use crate::game::{Inbound, Outbox};
 use crate::protocol::decode_client;
 
@@ -114,7 +115,8 @@ async fn ws_handler(
         *n += 1;
     }
     let slot = IpSlot { per_ip: st.per_ip.clone(), ip };
-    ws.on_upgrade(move |socket| handle_socket(socket, st, slot))
+    // Client messages are at most a few bytes (JOIN with a 10-char name is 12).
+    ws.max_message_size(64).max_frame_size(64).on_upgrade(move |socket| handle_socket(socket, st, slot))
 }
 
 async fn handle_socket(socket: WebSocket, st: AppState, _slot: IpSlot) {
@@ -155,7 +157,16 @@ async fn handle_socket(socket: WebSocket, st: AppState, _slot: IpSlot) {
 
     let tx = st.tx.clone();
     let reader = async move {
+        // Hard cap on every message type, before anything reaches the game thread.
+        let (mut window, mut count) = (Instant::now(), 0u32);
         while let Some(Ok(msg)) = stream.next().await {
+            if window.elapsed() >= Duration::from_secs(1) {
+                (window, count) = (Instant::now(), 0);
+            }
+            count += 1;
+            if count > 2 * INPUT_RATE_MAX {
+                break;
+            }
             match msg {
                 Message::Binary(b) => match decode_client(&b) {
                     Ok(m) => {

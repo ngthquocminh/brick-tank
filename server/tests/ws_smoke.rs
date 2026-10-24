@@ -82,3 +82,35 @@ async fn smoke() {
     .unwrap_or(false);
     assert!(closed);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn message_flood_closes_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let map = Arc::new(WallMap::generate(MAP_SEED));
+    let map_bin = Bytes::from(map.encode());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let cfg = GameConfig { records_path: dir.path().join("records.json"), max_players: 100, seed: 1 };
+    std::thread::spawn(move || run(Game::new(cfg, map), rx));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let net = NetConfig { static_dir: dir.path().to_path_buf(), max_per_ip: 5, trust_proxy: false };
+    tokio::spawn(serve(listener, router(tx, map_bin, net)));
+
+    let (mut ws, _) = connect_async(format!("ws://{addr}/ws")).await.unwrap();
+    for _ in 0..300 {
+        if ws.send(Message::Binary(Bytes::from_static(&[1, 3, b'B', b'O', b'T']))).await.is_err() {
+            break;
+        }
+    }
+    let closed = timeout(Duration::from_secs(2), async {
+        loop {
+            match ws.next().await {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return true,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(closed, "JOIN flood must close the socket");
+}
