@@ -148,6 +148,7 @@ impl World {
     pub fn remove(&mut self, id: u32, cause: Cause) -> Option<Death> {
         let i = self.index.remove(&id)?;
         let t = self.tanks.swap_remove(i);
+        self.grid.remove(id, t.mv.x, t.mv.y);
         if i < self.tanks.len() {
             self.index.insert(self.tanks[i].id, i);
         }
@@ -197,7 +198,7 @@ impl World {
     /// Ids of tanks whose box intersects, and indices of bullets inside, `[x0, x1) × [y0, y1)`.
     pub fn query_view(&self, x0: i32, y0: i32, x1: i32, y1: i32, tanks: &mut Vec<u32>, bullets: &mut Vec<usize>) {
         self.grid.query(x0 - 2, y0 - 2, x1, y1, |id| {
-            let t = &self.tanks[self.index[&id]];
+            let Some(t) = self.tank(id) else { return };
             if t.mv.x + 3 > x0 && t.mv.x < x1 && t.mv.y + 3 > y0 && t.mv.y < y1 {
                 tanks.push(id);
             }
@@ -240,7 +241,7 @@ impl World {
         }
         let mut free = true;
         self.grid.query(x - 2, y - 2, x + 3, y + 3, |id| {
-            let t = &self.tanks[self.index[&id]];
+            let Some(t) = self.tank(id) else { return };
             if Some(id) != ignore && box_overlap(x, y, t.mv.x, t.mv.y) {
                 free = false;
             }
@@ -253,7 +254,7 @@ impl World {
         let r = SPAWN_SAFE_DIST * 2;
         let mut best = r;
         self.grid.query(x - r, y - r, x + r, y + r, |id| {
-            let t = &self.tanks[self.index[&id]];
+            let Some(t) = self.tank(id) else { return };
             best = best.min((t.mv.x - x).abs().max((t.mv.y - y).abs()));
         });
         self.bullet_grid.query(x - r, y - r, x + r, y + r, |i| {
@@ -266,7 +267,7 @@ impl World {
     fn scan_free(&mut self, region: &Bounds) -> Option<(i32, i32)> {
         let (w, h) = (region.r - region.l - 2, region.b - region.t - 2);
         let total = w as i64 * h as i64;
-        let start = self.rng.next_u64() as i64 % total;
+        let start = (self.rng.next_u64() % total as u64) as i64;
         (0..total).map(|k| (start + k) % total).find_map(|k| {
             let (x, y) = (region.l + (k % w as i64) as i32, region.t + (k / w as i64) as i32);
             self.tank_fits(x, y, None).then_some((x, y))
@@ -659,5 +660,34 @@ pub(crate) mod tests {
         let deaths = w.step();
         assert_eq!(deaths.len(), 2);
         assert!(deaths.iter().all(|d| d.kills == 1));
+    }
+
+    #[test]
+    fn remove_then_spawn_between_ticks() {
+        let mut w = world();
+        let mut ids = Vec::new();
+        for i in 0..30 {
+            ids.push(w.place("P".into(), 995 + (i % 10) * 5, 995 + (i / 10) * 5, Dir::Up));
+        }
+        w.step();
+        for id in ids.iter().take(10) {
+            w.remove(*id, Cause::Disconnect);
+        }
+        for _ in 0..10 {
+            w.spawn("N".into());
+        }
+    }
+
+    #[test]
+    fn scan_free_finds_slot_for_many_seeds() {
+        for seed in 0..200 {
+            let mut w = World::new(Arc::new(WallMap::generate(MAP_SEED)), seed);
+            let (x, y) = free_strip(&w, 9, 3);
+            let region = Bounds { l: x, t: y, r: x + 9, b: y + 3 };
+            w.set_bounds(region);
+            w.place("L".into(), x, y, Dir::Up);
+            w.place("M".into(), x + 3, y, Dir::Up);
+            assert_eq!(w.scan_free(&region), Some((x + 6, y)), "seed {seed}");
+        }
     }
 }

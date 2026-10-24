@@ -5,6 +5,11 @@ use crate::config::MAP_SIZE;
 const BUCKET: i32 = 16;
 const SIDE: i32 = MAP_SIZE / BUCKET;
 
+fn bucket(x: i32, y: i32) -> usize {
+    let (bx, by) = ((x / BUCKET).clamp(0, SIDE - 1), (y / BUCKET).clamp(0, SIDE - 1));
+    (by * SIDE + bx) as usize
+}
+
 pub struct Grid {
     cells: Vec<Vec<u32>>,
 }
@@ -21,8 +26,15 @@ impl Grid {
     }
 
     pub fn insert(&mut self, id: u32, x: i32, y: i32) {
-        let (bx, by) = ((x / BUCKET).clamp(0, SIDE - 1), (y / BUCKET).clamp(0, SIDE - 1));
-        self.cells[(by * SIDE + bx) as usize].push(id);
+        self.cells[bucket(x, y)].push(id);
+    }
+
+    /// Removes `id` from the bucket of the point (x, y) it was inserted at.
+    pub fn remove(&mut self, id: u32, x: i32, y: i32) {
+        let cell = &mut self.cells[bucket(x, y)];
+        if let Some(i) = cell.iter().position(|&v| v == id) {
+            cell.swap_remove(i);
+        }
     }
 
     /// Calls `f` for every id whose bucket intersects `[x0, x1) × [y0, y1)`. Callers filter exactly.
