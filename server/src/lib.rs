@@ -8,3 +8,4 @@ pub mod world;
 pub mod board;
 pub mod protocol;
 pub mod game;
+pub mod net;
