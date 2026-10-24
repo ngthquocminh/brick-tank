@@ -26,7 +26,7 @@ impl WallMap {
             for bx in 0..blocks {
                 let (ox, oy) = (bx * BLOCK + BLOCK_MARGIN, by * BLOCK + BLOCK_MARGIN);
                 // Places a w×h box at a random spot inside the block's inner region.
-                let mut place = |rng: &mut Rng, w: i32, h: i32| {
+                let place = |rng: &mut Rng, w: i32, h: i32| {
                     (ox + rng.range(0, inner - w + 1), oy + rng.range(0, inner - h + 1))
                 };
                 let roll = rng.range(0, 100);
