@@ -415,6 +415,12 @@ impl World {
     pub(crate) fn set_bounds(&mut self, b: Bounds) {
         self.bounds = b;
     }
+
+    #[cfg(test)]
+    pub(crate) fn set_kills(&mut self, id: u32, kills: u16) {
+        let i = self.index[&id];
+        self.tanks[i].kills = kills;
+    }
 }
 
 #[cfg(test)]

@@ -5,3 +5,4 @@ pub mod rules;
 pub mod area;
 pub mod grid;
 pub mod world;
+pub mod board;
