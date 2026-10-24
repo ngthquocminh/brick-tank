@@ -121,7 +121,7 @@ setInterval(() => {
 
 // Writes big pixel-font words into the LCD frame, centered, on a cleared band.
 function bigText(words) {
-  const top = 18 - words.length * 3;
+  const top = 15 - words.length * 3; // keeps the band above the small-text plate at 62% height
   for (let y = top - 1; y < top + words.length * 6; y++) frame.fill(0, y * VIEW + 4, y * VIEW + 32);
   words.forEach((w, n) => {
     plotText(w, (VIEW - textWidth(w)) >> 1, top + n * 6, (x, y) => { frame[y * VIEW + x] = 1; });
