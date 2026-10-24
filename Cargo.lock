@@ -430,6 +430,13 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 [[package]]
 name = "loadtest"
 version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "server",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+]
 
 [[package]]
 name = "lock_api"

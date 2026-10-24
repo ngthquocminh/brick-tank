@@ -1,0 +1,5 @@
+# Replace with your domain; Caddy fetches the TLS certificate automatically.
+tank.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:8080
+}

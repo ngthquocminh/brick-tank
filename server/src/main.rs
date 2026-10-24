@@ -20,7 +20,7 @@ async fn main() {
     let bind: String = env("BIND", "0.0.0.0:8080".to_string());
     let static_dir: PathBuf = env("STATIC_DIR", PathBuf::from("client"));
     let records_path: PathBuf = env("RECORDS", PathBuf::from("records.json"));
-    let max_players: usize = env("MAX_PLAYERS", 5000);
+    let max_players: usize = env("MAX_PLAYERS", 3000);
     let max_per_ip: u32 = env("MAX_PER_IP", 5);
     let trust_proxy = env("TRUST_PROXY", 0u8) == 1;
 
