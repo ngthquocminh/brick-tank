@@ -13,3 +13,4 @@ editing history.
 | [0005](0005-spawn-protection-and-afk.md) | 3 s spawn invulnerability and 60 s AFK removal |
 | [0006](0006-latch-short-taps.md) | Latch key taps shorter than a tick |
 | [0007](0007-player-cap-from-measurement.md) | Player cap of 3000 per 2-vCPU server, from load tests |
+| [0008](0008-inputs-per-client-tick.md) | One input per client tick, applied one per server tick |

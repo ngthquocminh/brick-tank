@@ -1,6 +1,7 @@
 # 0005 — 3 s spawn invulnerability and 60 s AFK removal
 
-**Status:** accepted
+**Status:** accepted; since [0008](0008-inputs-per-client-tick.md) "no input" means input that
+has not changed, as INPUTs arrive every tick
 
 ## Context
 

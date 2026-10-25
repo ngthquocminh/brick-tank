@@ -15,10 +15,11 @@ const startForm = $('#start'), nameInput = $('#name');
 const predictor = new Predictor();
 const names = new Map();
 const frame = new Uint8Array(VIEW * VIEW);
+const MAX_CATCH_UP = 4; // local ticks run at once when timers fall behind
 
 // state: start | connecting | joining | alive | dead | full | closed
 let state = 'start', map = null, ws = null, snap = null, board = null, dead = null;
-let name = '', seq = 0, held = 0, fire = false, aliveSince = 0, awaitingFirst = false;
+let name = '', held = 0, fire = false, aliveSince = 0, awaitingFirst = false;
 
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
@@ -57,31 +58,22 @@ function join() {
   }
 }
 
-function sendInput() {
-  seq = (seq % 65535) + 1;
-  predictor.setSeq(seq);
-  ws.send(encodeInput(seq, held, fire));
-}
-
 function onMessage(m) {
   switch (m.type) {
     case 'welcome':
       state = 'alive';
       awaitingFirst = true;
-      seq = 0;
       dead = null;
       aliveSince = performance.now();
-      if (held || fire) sendInput();
       break;
     case 'snapshot': {
       snap = m;
       const own = { x: m.ownX, y: m.ownY, dir: m.ownDir, cd: m.ownCd };
       if (awaitingFirst) {
         predictor.reset(own);
-        if (seq) predictor.setSeq(seq);
         awaitingFirst = false;
       } else {
-        predictor.reconcile(own, m.ackSeq, m.ackTicks, m.ownHasBullet, blocked);
+        predictor.reconcile(own, m.ack, m.ownHasBullet, blocked);
       }
       break;
     }
@@ -108,16 +100,24 @@ createInput((h, f) => {
   held = h;
   fire = f;
   predictor.press(h ? h - 1 : null, f);
-  if (state === 'alive') sendInput();
 }, () => {
   if (state === 'dead' || state === 'full') join();
   else if (state === 'closed') connect();
 });
 
+// Each local tick is predicted, then reported; the server applies the reports one per tick.
+// Ticks follow the clock rather than the timer, which fires late (Windows timers are coarse), so
+// the client keeps the server's 20 Hz; after a long stall (a background tab) the backlog is skipped.
+let nextTickAt = 0;
 setInterval(() => {
-  if (state !== 'alive' || !snap || awaitingFirst) return;
-  predictor.localTick(held ? held - 1 : null, fire, !snap.ownInvuln, blocked, bulletBlocked);
-}, TICK_MS);
+  if (state !== 'alive' || !snap || awaitingFirst) { nextTickAt = 0; return; }
+  const now = performance.now();
+  if (!nextTickAt || now - nextTickAt > MAX_CATCH_UP * TICK_MS) nextTickAt = now;
+  for (; nextTickAt <= now; nextTickAt += TICK_MS) {
+    const r = predictor.localTick(held ? held - 1 : null, fire, !snap.ownInvuln, blocked, bulletBlocked);
+    ws.send(encodeInput(r.tick, r.held === null ? 0 : r.held + 1, r.fire));
+  }
+}, TICK_MS / 5);
 
 // Writes big pixel-font words into the LCD frame, centered, on a cleared band.
 function bigText(words) {

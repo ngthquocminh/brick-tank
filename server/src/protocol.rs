@@ -21,7 +21,8 @@ pub struct ProtoError;
 #[derive(Debug, PartialEq)]
 pub enum ClientMsg {
     Join { name: String },
-    Input { seq: u16, held: Option<Dir>, fire: bool },
+    /// What the client did on its local tick `tick`; one is sent per client tick.
+    Input { tick: u16, held: Option<Dir>, fire: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -57,8 +58,8 @@ pub struct BulletView {
 pub struct SnapshotMsg {
     pub tick: u32,
     pub own: OwnView,
-    pub ack_seq: u16,
-    pub ack_ticks: u16,
+    /// Last client tick applied to the own tank; `None` until one has been since joining.
+    pub ack: Option<u16>,
     pub bounds: Bounds,
     pub tanks: Vec<TankView>,
     pub bullets: Vec<BulletView>,
@@ -130,10 +131,10 @@ pub fn decode_client(buf: &[u8]) -> Result<ClientMsg, ProtoError> {
             ClientMsg::Join { name }
         }
         INPUT => {
-            let seq = r.u16()?;
+            let tick = r.u16()?;
             let bits = r.u8()?;
             let held = held_from_code(bits & 0x07).map_err(|_| ProtoError)?;
-            ClientMsg::Input { seq, held, fire: bits & 0x08 != 0 }
+            ClientMsg::Input { tick, held, fire: bits & 0x08 != 0 }
         }
         _ => return Err(ProtoError),
     };
@@ -159,8 +160,7 @@ pub fn encode_snapshot(
     out: &mut Vec<u8>,
     tick: u32,
     own: &OwnView,
-    ack_seq: u16,
-    ack_ticks: u16,
+    ack: Option<u16>,
     bounds: &Bounds,
     tanks: &[TankView],
     bullets: &[BulletView],
@@ -169,11 +169,16 @@ pub fn encode_snapshot(
     out.extend_from_slice(&tick.to_le_bytes());
     out.extend_from_slice(&own.x.to_le_bytes());
     out.extend_from_slice(&own.y.to_le_bytes());
-    out.push(own.dir as u8 | (own.invuln as u8) << 2 | (own.afk_warn as u8) << 3 | (own.has_bullet as u8) << 4);
+    out.push(
+        own.dir as u8
+            | (own.invuln as u8) << 2
+            | (own.afk_warn as u8) << 3
+            | (own.has_bullet as u8) << 4
+            | (ack.is_some() as u8) << 5,
+    );
     out.push(own.cd);
     out.extend_from_slice(&own.kills.to_le_bytes());
-    out.extend_from_slice(&ack_seq.to_le_bytes());
-    out.extend_from_slice(&ack_ticks.to_le_bytes());
+    out.extend_from_slice(&ack.unwrap_or(0).to_le_bytes());
     for v in [bounds.l, bounds.t, bounds.r, bounds.b] {
         out.extend_from_slice(&(v as u16).to_le_bytes());
     }
@@ -272,7 +277,8 @@ pub fn decode_server(buf: &[u8]) -> Result<ServerMsg, ProtoError> {
                 cd: r.u8()?,
                 kills: r.u16()?,
             };
-            let (ack_seq, ack_ticks) = (r.u16()?, r.u16()?);
+            let ack = r.u16()?;
+            let ack = (f & 32 != 0).then_some(ack);
             let bounds = Bounds { l: r.u16()? as i32, t: r.u16()? as i32, r: r.u16()? as i32, b: r.u16()? as i32 };
             let mut tanks = Vec::new();
             for _ in 0..r.u8()? {
@@ -284,7 +290,7 @@ pub fn decode_server(buf: &[u8]) -> Result<ServerMsg, ProtoError> {
                 let (dx, dy, f) = (r.u8()?, r.u8()?, r.u8()?);
                 bullets.push(BulletView { dx, dy, own: f & 1 != 0 });
             }
-            ServerMsg::Snapshot(SnapshotMsg { tick, own, ack_seq, ack_ticks, bounds, tanks, bullets })
+            ServerMsg::Snapshot(SnapshotMsg { tick, own, ack, bounds, tanks, bullets })
         }
         NAMES => {
             let mut names = Vec::new();
@@ -328,7 +334,7 @@ mod tests {
     fn input_golden() {
         assert_eq!(
             decode_client(&[0x02, 0x34, 0x12, 0b0000_1010]),
-            Ok(ClientMsg::Input { seq: 0x1234, held: Some(Dir::Right), fire: true })
+            Ok(ClientMsg::Input { tick: 0x1234, held: Some(Dir::Right), fire: true })
         );
     }
 
@@ -371,11 +377,13 @@ mod tests {
             BulletView { dx: 20, dy: 30, own: false },
             BulletView { dx: 43, dy: 43, own: false },
         ];
-        let mut out = Vec::new();
-        encode_snapshot(&mut out, 123456, &own, 77, 3, &bounds, &tanks, &bullets);
-        assert_eq!(out.len(), 27 + 2 * 9 + 3 * 3);
-        let expected = SnapshotMsg { tick: 123456, own, ack_seq: 77, ack_ticks: 3, bounds, tanks: tanks.to_vec(), bullets: bullets.to_vec() };
-        assert_eq!(decode_server(&out), Ok(ServerMsg::Snapshot(expected)));
+        for ack in [Some(0xFFFF), Some(0), None] {
+            let mut out = Vec::new();
+            encode_snapshot(&mut out, 123456, &own, ack, &bounds, &tanks, &bullets);
+            assert_eq!(out.len(), 25 + 2 * 9 + 3 * 3);
+            let expected = SnapshotMsg { tick: 123456, own, ack, bounds, tanks: tanks.to_vec(), bullets: bullets.to_vec() };
+            assert_eq!(decode_server(&out), Ok(ServerMsg::Snapshot(expected)));
+        }
     }
 
     #[test]

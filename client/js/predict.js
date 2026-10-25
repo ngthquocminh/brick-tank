@@ -3,18 +3,23 @@ import { stepMove, muzzle, DELTA, BULLET_RANGE } from './rules.js';
 
 const HISTORY_MAX = 200;
 
+// Whether client tick `a` comes after `b` (tick numbers wrap at 16 bits).
+const after = (a, b) => {
+  const d = (a - b) & 0xffff;
+  return d !== 0 && d < 0x8000;
+};
+
 export class Predictor {
   constructor() {
     this.tank = { x: 0, y: 0, dir: 0, cd: 0 };
     this.bullet = null;
     this.history = [];
-    this.seq = 0;
-    this.k = 0;
+    this.tick = 0;
     this.tap = null;
     this.fireTap = false;
   }
 
-  // Latches a press so a tap shorter than one tick still acts (mirrors the server's tap).
+  // Latches a press so a tap shorter than one tick still acts.
   press(held, fire) {
     if (held !== null) this.tap = held;
     if (fire) this.fireTap = true;
@@ -24,22 +29,16 @@ export class Predictor {
     this.tank = { ...own };
     this.bullet = null;
     this.history = [];
-    this.seq = 0;
-    this.k = 0;
   }
 
-  // Called when a new INPUT is sent; ticks under it are counted from 1.
-  setSeq(seq) {
-    this.seq = seq;
-    this.k = 0;
-  }
-
+  // Runs the next client tick and returns its report for the server: { tick, held, fire }.
   localTick(held, fire, canFire, blocked, bulletBlocked) {
     held = held ?? this.tap;
     if (this.tank.cd === 0) this.tap = null;
     fire = fire || this.fireTap;
     this.fireTap = false;
-    const entry = { seq: this.seq, k: ++this.k, held, fired: false };
+    this.tick = (this.tick + 1) & 0xffff;
+    const entry = { tick: this.tick, held, fired: false };
     stepMove(this.tank, held, blocked);
     const b = this.bullet;
     if (b) {
@@ -54,18 +53,14 @@ export class Predictor {
     }
     this.history.push(entry);
     if (this.history.length > HISTORY_MAX) this.history.shift();
+    return { tick: this.tick, held, fire };
   }
 
-  // Rebases on the server's state for (ackSeq, ackTicks) and replays later local ticks.
-  reconcile(own, ackSeq, ackTicks, ownHasBullet, blocked) {
-    const i = this.history.findIndex((e) => e.seq === ackSeq && e.k === ackTicks);
+  // Rebases on the server's state after client tick `ack` (null: none applied yet) and replays
+  // the local ticks the server has not applied.
+  reconcile(own, ack, ownHasBullet, blocked) {
     this.tank = { ...own };
-    if (i < 0) {
-      this.history = [];
-      if (!ownHasBullet) this.bullet = null;
-      return;
-    }
-    const later = this.history.slice(i + 1);
+    const later = ack === null ? this.history : this.history.filter((e) => after(e.tick, ack));
     for (const e of later) stepMove(this.tank, e.held, blocked);
     this.history = later;
     if (!ownHasBullet && !later.some((e) => e.fired)) this.bullet = null;

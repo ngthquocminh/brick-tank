@@ -16,9 +16,8 @@ pub struct Tank {
     pub mv: TankMove,
     pub held: Option<Dir>,
     pub fire: bool,
-    /// A press seen since the tank last acted, kept so taps shorter than a tick still count.
-    pub tap: Option<Dir>,
-    pub fire_tap: bool,
+    /// The client's report for this tick has not arrived: the tank sits the tick out.
+    pub waiting: bool,
     pub kills: u16,
     pub born_tick: u64,
     pub invuln_until: u64,
@@ -108,14 +107,22 @@ impl World {
         self.tick - t.last_input_tick >= AFK_WARN_TICKS
     }
 
+    /// Sets what the tank does from the next tick on. Only a change counts as activity for AFK.
     pub fn set_input(&mut self, id: u32, held: Option<Dir>, fire: bool) {
         if let Some(&i) = self.index.get(&id) {
             let t = &mut self.tanks[i];
+            if (t.held, t.fire) != (held, fire) {
+                t.last_input_tick = self.tick;
+            }
             t.held = held;
             t.fire = fire;
-            t.tap = held.or(t.tap);
-            t.fire_tap |= fire;
-            t.last_input_tick = self.tick;
+        }
+    }
+
+    /// Makes the tank skip the next tick entirely: no move, no cooldown, no fire.
+    pub fn hold(&mut self, id: u32) {
+        if let Some(&i) = self.index.get(&id) {
+            self.tanks[i].waiting = true;
         }
     }
 
@@ -189,6 +196,7 @@ impl World {
         self.bullets.retain(|b| open.contains_cell(b.x, b.y));
         for t in &mut self.tanks {
             t.has_bullet = false;
+            t.waiting = false;
         }
         for b in &mut self.bullets {
             b.fresh = false;
@@ -226,8 +234,7 @@ impl World {
             mv: TankMove { x, y, dir, cd: 0 },
             held: None,
             fire: false,
-            tap: None,
-            fire_tap: false,
+            waiting: false,
             kills: 0,
             born_tick: self.tick,
             invuln_until: 0,
@@ -284,7 +291,9 @@ impl World {
     fn move_tanks(&mut self) {
         let desired: Vec<TankMove> = self.tanks.iter().map(|t| {
             let mut m = t.mv;
-            step_move(&mut m, t.held.or(t.tap), |x, y| self.box_blocked_static(x, y));
+            if !t.waiting {
+                step_move(&mut m, t.held, |x, y| self.box_blocked_static(x, y));
+            }
             m
         }).collect();
         for i in 0..self.tanks.len() {
@@ -305,18 +314,13 @@ impl World {
                     want.y = cur.y;
                 }
             }
-            if cur.cd == 0 {
-                self.tanks[i].tap = None;
-            }
             self.tanks[i].mv = want;
         }
     }
 
     fn fire_bullets(&mut self) {
         for t in &mut self.tanks {
-            let fire = t.fire || t.fire_tap;
-            t.fire_tap = false;
-            if fire && !t.has_bullet && self.tick >= t.invuln_until {
+            if t.fire && !t.waiting && !t.has_bullet && self.tick >= t.invuln_until {
                 let (x, y) = muzzle(t.mv.x, t.mv.y, t.mv.dir);
                 self.bullets.push(Bullet {
                     owner: t.id,
@@ -704,32 +708,39 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn tap_shorter_than_a_tick_still_turns_and_fires() {
-        let mut w = world();
-        let (x, y) = free_strip(&w, 32, 3);
-        let id = w.place("A".into(), x, y, Dir::Up);
-        w.set_input(id, Some(Dir::Right), true);
-        w.set_input(id, None, false);
-        w.step();
-        assert_eq!(w.tank(id).unwrap().mv.dir, Dir::Right);
-        assert_eq!(w.bullets().len(), 1);
-    }
-
-    #[test]
-    fn tap_during_cooldown_waits_for_the_tank() {
+    fn held_tank_sits_out_the_tick() {
         let mut w = world();
         let (x, y) = free_strip(&w, 32, 3);
         let id = w.place("A".into(), x, y, Dir::Right);
-        w.set_input(id, Some(Dir::Right), false);
+        w.set_input(id, Some(Dir::Right), true);
+        w.hold(id);
         w.step();
-        assert_eq!((w.tank(id).unwrap().mv.x, w.tank(id).unwrap().mv.cd), (x + 1, 1));
-        w.set_input(id, Some(Dir::Right), false);
-        w.set_input(id, None, false);
+        assert_eq!(w.tank(id).unwrap().mv, TankMove { x, y, dir: Dir::Right, cd: 0 });
+        assert!(w.bullets().is_empty());
         w.step();
+        assert_eq!(w.tank(id).unwrap().mv, TankMove { x: x + 1, y, dir: Dir::Right, cd: 1 });
+        assert_eq!(w.bullets().len(), 1);
+        w.hold(id);
         w.step();
-        assert_eq!(w.tank(id).unwrap().mv.x, x + 2);
+        assert_eq!(w.tank(id).unwrap().mv.cd, 1, "a held tick does not cool down");
+    }
+
+    #[test]
+    fn repeating_the_same_input_is_not_activity() {
+        let mut w = world();
+        let id = w.place("A".into(), 1000, 1000, Dir::Up);
+        for _ in 0..AFK_KILL_TICKS - 1 {
+            w.set_input(id, None, false);
+            assert!(w.step().is_empty());
+        }
+        w.set_input(id, Some(Dir::Up), false);
+        assert!(w.step().is_empty());
+        for _ in 0..AFK_KILL_TICKS - 2 {
+            w.set_input(id, Some(Dir::Up), false);
+            w.step();
+        }
+        assert!(w.tank(id).is_some());
         w.step();
-        w.step();
-        assert_eq!(w.tank(id).unwrap().mv.x, x + 2);
+        assert!(w.tank(id).is_none());
     }
 }

@@ -9,8 +9,9 @@ export function encodeJoin(name) {
   return out;
 }
 
-export function encodeInput(seq, heldCode, fire) {
-  return new Uint8Array([0x02, seq & 0xff, (seq >> 8) & 0xff, (heldCode & 7) | (fire ? 8 : 0)]);
+// One per local tick: what the own tank was told to do on client tick `tick`.
+export function encodeInput(tick, heldCode, fire) {
+  return new Uint8Array([0x02, tick & 0xff, (tick >> 8) & 0xff, (heldCode & 7) | (fire ? 8 : 0)]);
 }
 
 export function decode(buf) {
@@ -28,7 +29,9 @@ export function decode(buf) {
       const m = { type: 'snapshot', tick: u32(), ownX: u16(), ownY: u16() };
       const f = u8();
       Object.assign(m, { ownDir: f & 3, ownInvuln: !!(f & 4), ownAfkWarn: !!(f & 8), ownHasBullet: !!(f & 16) });
-      Object.assign(m, { ownCd: u8(), ownKills: u16(), ackSeq: u16(), ackTicks: u16() });
+      Object.assign(m, { ownCd: u8(), ownKills: u16() });
+      const ack = u16();
+      m.ack = f & 32 ? ack : null;
       m.bounds = { l: u16(), t: u16(), r: u16(), b: u16() };
       const ox = m.ownX - VIEW_HALF - DX_OFFSET, oy = m.ownY - VIEW_HALF - DX_OFFSET;
       m.tanks = [];

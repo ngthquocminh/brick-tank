@@ -16,10 +16,16 @@ message is its type. The Rust implementation is `server/src/protocol.rs`; the br
 | Type | Name | Payload |
 |---|---|---|
 | `0x01` | JOIN | `str name` — spawn a tank (ignored while you already have one) |
-| `0x02` | INPUT | `u16 seq`, `u8 bits` — bits 0–2 held-input code, bit 3 fire held |
+| `0x02` | INPUT | `u16 tick`, `u8 bits` — bits 0–2 held-input code, bit 3 fire |
 
-Send INPUT only when the held state changes, incrementing `seq` each time. INPUT before JOIN is
-ignored.
+Send one INPUT for every 50 ms client tick, numbering ticks consecutively (wrapping after 65535).
+It says what your tank was told to do on that tick: the direction applied (after any latched tap)
+and whether fire was pressed. INPUT before JOIN or while dead is ignored.
+
+The server queues INPUTs and applies exactly one per server tick, in arrival order. If none is
+waiting, your tank sits that tick out: no move, no cooldown, no fire. At most 4 wait; beyond that
+the oldest are dropped, and if 3 or more were waiting at every tick for 40 ticks, one is dropped
+so the backlog does not linger as delay. A fire press in a dropped INPUT carries over to the next.
 
 ## Server → client
 
@@ -38,25 +44,24 @@ ignored.
 |---|---|---|
 | tick | `u32` | |
 | own_x, own_y | `u16`, `u16` | top-left of your 3×3 tank |
-| own_flags | `u8` | bits 0–1 direction, bit 2 invulnerable, bit 3 AFK warning, bit 4 has a bullet in flight |
+| own_flags | `u8` | bits 0–1 direction, bit 2 invulnerable, bit 3 AFK warning, bit 4 has a bullet in flight, bit 5 `ack` is valid |
 | own_cd | `u8` | movement cooldown (0 = can act this tick) |
 | own_kills | `u16` | |
-| ack_seq | `u16` | last INPUT `seq` the server applied (0 before any input) |
-| ack_ticks | `u16` | ticks that input has been applied, including this one |
+| ack | `u16` | `tick` of the last INPUT applied to your tank; only valid with own_flags bit 5 (clear until one has been applied since JOIN) |
 | l, t, r, b | 4 × `u16` | open area, half-open: `l <= x < r`, `t <= y < b` |
 | n_tanks | `u8` | then n × (`u32 id`, `u8 dx`, `u8 dy`, `u8 flags` (bits 0–1 direction, bit 2 invulnerable), `u16 kills`) |
 | n_bullets | `u8` | then n × (`u8 dx`, `u8 dy`, `u8 flags` (bit 0 = your bullet)) |
 
-The fixed part is 27 bytes; each tank adds 9 and each bullet 3. Lists are capped at 255 entries.
+The fixed part is 25 bytes; each tank adds 9 and each bullet 3. Lists are capped at 255 entries.
 
 **Positions.** The server's view origin is `vx = own_x − 17`, `vy = own_y − 17` (your tank sits in
 the middle of a 36×36 view). Other tanks and bullets within 4 cells of the view are included, with
 `dx = x − vx + 8` and `dy = y − vy + 8`, so `x = own_x − 25 + dx`. Your own tank is never in the
 tank list.
 
-**Acks.** The client counts, per `seq`, how many local ticks it has run under that input (from 1).
-The server state in a snapshot corresponds to the local tick where that count equals
-`ack_ticks`; the client rebases its tank there and replays the later ticks.
+**Acks.** Your tank in a snapshot is the server's state right after it applied client tick
+`ack`. A predicting client resets its tank to it and replays its own ticks after `ack` (all of
+them while `ack` is not valid).
 
 ### BOARD (`0x13`)
 
@@ -74,8 +79,8 @@ u16 my_rank_time
 
 - At most 5 WebSocket connections per IP (configurable).
 - Frames over 64 bytes, Text frames, or malformed messages close the connection.
-- More than 120 messages per second on one connection closes it; more than 60 INPUTs within 20
-  ticks drops the player.
+- More than 200 messages per second on one connection closes it; more than 100 INPUTs within 20
+  ticks drops the player. A client sends 20 a second; the rest is room for a burst after a stall.
 
 ## `/map.bin`
 

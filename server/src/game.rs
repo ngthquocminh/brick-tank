@@ -1,6 +1,6 @@
 //! The game thread: owns the world, applies client messages, ticks, and fans out snapshots.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -13,6 +13,7 @@ use crate::board::{alive_boards, Records};
 use crate::config::*;
 use crate::map::WallMap;
 use crate::protocol::*;
+use crate::rules::Dir;
 use crate::world::{Cause, Death, World};
 
 pub struct Outbox {
@@ -37,10 +38,30 @@ struct Client {
     out: Outbox,
     tank: Option<u32>,
     known: HashSet<u32>,
-    last_seq: u16,
-    seq_start_tick: u64,
+    /// Reports not applied yet, oldest first; one is applied per tick.
+    inputs: VecDeque<Report>,
+    /// Client tick of the last report applied, echoed in snapshots.
+    ack: Option<u16>,
+    /// Fewest reports waiting at any tick of the current drain window.
+    min_waiting: usize,
     msgs_in_window: u32,
     drop_me: bool,
+}
+
+/// What a client did on one of its ticks.
+struct Report {
+    tick: u16,
+    held: Option<Dir>,
+    fire: bool,
+}
+
+/// Drops the oldest report, passing a fire press on so it is not lost.
+fn drop_oldest(inputs: &mut VecDeque<Report>) {
+    if let Some(r) = inputs.pop_front() {
+        if let Some(next) = inputs.front_mut() {
+            next.fire |= r.fire;
+        }
+    }
 }
 
 pub struct Game {
@@ -73,8 +94,9 @@ impl Game {
                     out,
                     tank: None,
                     known: HashSet::new(),
-                    last_seq: 0,
-                    seq_start_tick: 0,
+                    inputs: VecDeque::new(),
+                    ack: None,
+                    min_waiting: usize::MAX,
                     msgs_in_window: 0,
                     drop_me: false,
                 };
@@ -87,7 +109,6 @@ impl Game {
     }
 
     fn on_msg(&mut self, conn: u64, msg: ClientMsg) {
-        let tick = self.world.tick;
         let Some(c) = self.clients.get_mut(&conn) else { return };
         match msg {
             ClientMsg::Join { name } => {
@@ -102,8 +123,9 @@ impl Game {
                 let reply = match spawned {
                     Some(id) => {
                         c.tank = Some(id);
-                        c.last_seq = 0;
-                        c.seq_start_tick = tick + 1;
+                        c.inputs.clear();
+                        c.ack = None;
+                        c.min_waiting = usize::MAX;
                         c.known.clear();
                         encode_welcome(id, self.map_version)
                     }
@@ -113,18 +135,19 @@ impl Game {
                     c.drop_me = true;
                 }
             }
-            ClientMsg::Input { seq, held, fire } => {
+            ClientMsg::Input { tick, held, fire } => {
                 c.msgs_in_window += 1;
                 if c.msgs_in_window > INPUT_RATE_MAX {
                     self.drop_client(conn);
                     return;
                 }
-                let Some(id) = c.tank else { return };
-                if seq != c.last_seq {
-                    c.last_seq = seq;
-                    c.seq_start_tick = tick + 1;
+                if c.tank.is_none() {
+                    return;
                 }
-                self.world.set_input(id, held, fire);
+                c.inputs.push_back(Report { tick, held, fire });
+                while c.inputs.len() > INPUT_QUEUE_MAX {
+                    drop_oldest(&mut c.inputs);
+                }
             }
         }
     }
@@ -150,7 +173,31 @@ impl Game {
         rk as u8 | (rt as u8) << 1
     }
 
+    /// Gives every client's tank exactly one of its reports for the coming tick, or holds the
+    /// tank if none has arrived, so the server runs each client tick once, in order.
+    fn apply_inputs(&mut self) {
+        let drain = (self.world.tick + 1) % INPUT_DRAIN_EVERY == 0;
+        for c in self.clients.values_mut() {
+            let Some(id) = c.tank else { continue };
+            c.min_waiting = c.min_waiting.min(c.inputs.len());
+            if drain {
+                if c.min_waiting > INPUT_SLACK_MAX {
+                    drop_oldest(&mut c.inputs);
+                }
+                c.min_waiting = usize::MAX;
+            }
+            match c.inputs.pop_front() {
+                Some(r) => {
+                    self.world.set_input(id, r.held, r.fire);
+                    c.ack = Some(r.tick);
+                }
+                None => self.world.hold(id),
+            }
+        }
+    }
+
     pub fn tick(&mut self) {
+        self.apply_inputs();
         for d in self.world.step() {
             let flags = self.record(&d);
             let cause = match d.cause {
@@ -261,9 +308,8 @@ fn send_snapshot(world: &World, c: &mut Client) {
         cd: t.mv.cd,
         kills: t.kills,
     };
-    let ack_ticks = (world.tick + 1).saturating_sub(c.seq_start_tick).min(u16::MAX as u64) as u16;
     let mut out = Vec::with_capacity(64 + 9 * tanks.len() + 3 * bullets.len());
-    encode_snapshot(&mut out, world.tick as u32, &own, c.last_seq, ack_ticks, &world.bounds, &tanks, &bullets);
+    encode_snapshot(&mut out, world.tick as u32, &own, c.ack, &world.bounds, &tanks, &bullets);
     c.out.snapshot.send_replace(out.into());
 }
 
@@ -350,8 +396,21 @@ mod tests {
         g.handle(Inbound::Msg { conn, msg: ClientMsg::Join { name: name.into() } });
     }
 
-    fn input(g: &mut Game, conn: u64, seq: u16) {
-        g.handle(Inbound::Msg { conn, msg: ClientMsg::Input { seq, held: None, fire: false } });
+    fn input(g: &mut Game, conn: u64, tick: u16) {
+        report(g, conn, tick, None, false);
+    }
+
+    fn report(g: &mut Game, conn: u64, tick: u16, held: Option<Dir>, fire: bool) {
+        g.handle(Inbound::Msg { conn, msg: ClientMsg::Input { tick, held, fire } });
+    }
+
+    /// A connected client whose tank stands, facing right, at the left end of a wall-free strip.
+    fn placed(g: &mut Game, conn: u64) -> (watch::Receiver<Bytes>, mpsc::Receiver<Bytes>, u32, i32) {
+        let (srx, rrx) = connect(g, conn, 1024);
+        let (x, y) = crate::world::tests::free_strip(&g.world, 20, 3);
+        let id = g.world.place("A".into(), x, y, Dir::Right);
+        g.clients.get_mut(&conn).unwrap().tank = Some(id);
+        (srx, rrx, id, x)
     }
 
     fn drain(rx: &mut mpsc::Receiver<Bytes>) -> Vec<ServerMsg> {
@@ -423,33 +482,101 @@ mod tests {
     }
 
     #[test]
-    fn ack_counts_ticks() {
+    fn ack_is_last_applied_client_tick() {
         let dir = tempfile::tempdir().unwrap();
         let mut g = game(&dir, 10);
         let (srx, _r) = connect(&mut g, 1, 64);
         join(&mut g, 1, "A");
         g.tick();
-        input(&mut g, 1, 7);
-        for _ in 0..3 {
-            g.tick();
-        }
-        let s = snapshot(&srx);
-        assert_eq!((s.ack_seq, s.ack_ticks), (7, 3));
+        assert_eq!(snapshot(&srx).ack, None);
+        input(&mut g, 1, 65535);
+        input(&mut g, 1, 0);
+        g.tick();
+        assert_eq!(snapshot(&srx).ack, Some(65535));
+        g.tick();
+        assert_eq!(snapshot(&srx).ack, Some(0));
+        g.tick();
+        assert_eq!(snapshot(&srx).ack, Some(0), "nothing new applied");
     }
 
     #[test]
-    fn ack_not_saturated_at_255() {
+    fn one_report_per_tick_and_hold_when_none() {
         let dir = tempfile::tempdir().unwrap();
         let mut g = game(&dir, 10);
-        let (srx, _r) = connect(&mut g, 1, 1024);
-        join(&mut g, 1, "A");
+        let (srx, _r, id, x) = placed(&mut g, 1);
+        for t in 1..=3 {
+            report(&mut g, 1, t, Some(Dir::Right), false);
+        }
+        let mv = |g: &Game| g.world.tank(id).unwrap().mv;
         g.tick();
-        input(&mut g, 1, 7);
-        for _ in 0..300 {
+        assert_eq!((mv(&g).x, mv(&g).cd), (x + 1, 1));
+        g.tick();
+        assert_eq!((mv(&g).x, mv(&g).cd), (x + 1, 0));
+        g.tick();
+        assert_eq!((mv(&g).x, mv(&g).cd), (x + 2, 1));
+        g.tick();
+        g.tick();
+        assert_eq!((mv(&g).x, mv(&g).cd), (x + 2, 1), "held while no report arrives");
+        assert_eq!(snapshot(&srx).ack, Some(3));
+        report(&mut g, 1, 4, Some(Dir::Right), false);
+        report(&mut g, 1, 5, Some(Dir::Right), false);
+        g.tick();
+        g.tick();
+        assert_eq!((mv(&g).x, mv(&g).cd), (x + 3, 1), "late reports are still applied in order");
+    }
+
+    #[test]
+    fn overflow_drops_oldest_but_keeps_fire() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut g = game(&dir, 10);
+        let (srx, _r, _, _) = placed(&mut g, 1);
+        report(&mut g, 1, 1, None, true);
+        for t in 2..=(INPUT_QUEUE_MAX as u16 + 2) {
+            input(&mut g, 1, t);
+        }
+        g.tick();
+        let s = snapshot(&srx);
+        assert_eq!(s.ack, Some(3));
+        assert!(s.own.has_bullet);
+    }
+
+    #[test]
+    fn standing_backlog_is_drained() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut g = game(&dir, 10);
+        let (srx, _r, _, _) = placed(&mut g, 1);
+        for t in 1..=3 {
+            input(&mut g, 1, t);
+        }
+        for t in 4..INPUT_DRAIN_EVERY as u16 + 3 {
+            input(&mut g, 1, t);
             g.tick();
         }
-        let s = snapshot(&srx);
-        assert_eq!((s.ack_seq, s.ack_ticks as u32), (7, 300));
+        assert_eq!(snapshot(&srx).ack, Some(INPUT_DRAIN_EVERY as u16 - 1));
+        input(&mut g, 1, INPUT_DRAIN_EVERY as u16 + 3);
+        g.tick();
+        assert_eq!(snapshot(&srx).ack, Some(INPUT_DRAIN_EVERY as u16 + 1), "one report skipped");
+    }
+
+    #[test]
+    fn jitter_within_slack_is_not_drained() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut g = game(&dir, 10);
+        let (srx, _r, _, _) = placed(&mut g, 1);
+        let mut next = 1u16;
+        input(&mut g, 1, next);
+        next += 1;
+        for i in 0..3 * INPUT_DRAIN_EVERY {
+            // Reports arrive in pairs every other tick: 3 or 2 are waiting at tick time.
+            if i % 2 == 0 {
+                for _ in 0..2 {
+                    input(&mut g, 1, next);
+                    next += 1;
+                }
+            }
+            g.tick();
+        }
+        assert_eq!(snapshot(&srx).ack, Some(3 * INPUT_DRAIN_EVERY as u16));
     }
 
     #[test]

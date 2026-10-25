@@ -24,5 +24,12 @@ pub const RECORDS_N: usize = 5;
 pub const NAME_MAX: usize = 10;
 pub const MAP_SEED: u64 = 0xB41C_7A4E;
 pub const BOARD_EVERY: u64 = 20;
-pub const INPUT_RATE_MAX: u32 = 60;
+/// INPUT messages allowed per second: 20 normally, the rest is room for a burst after a stall.
+pub const INPUT_RATE_MAX: u32 = 100;
+/// Reports a client may have waiting; on overflow the oldest are dropped.
+pub const INPUT_QUEUE_MAX: usize = 4;
+/// Every this many ticks, one report is dropped if the queue never held fewer than
+/// `INPUT_SLACK_MAX + 1` at tick time, so a backlog does not linger as extra delay.
+pub const INPUT_DRAIN_EVERY: u64 = 40;
+pub const INPUT_SLACK_MAX: usize = 2;
 pub const RELIABLE_QUEUE: usize = 64;

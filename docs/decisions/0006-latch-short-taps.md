@@ -1,6 +1,7 @@
 # 0006 — Latch key taps shorter than a tick
 
-**Status:** accepted
+**Status:** accepted; amended by [0008](0008-inputs-per-client-tick.md) — the latch now lives only
+in the client, which reports each tick's latched direction to the server.
 
 ## Context
 

@@ -34,7 +34,8 @@ async fn bot(url: String, n: u64, stats: Arc<Stats>) {
     let name = format!("BOT{}", n % 10_000_000);
     let mut rng = Rng::new(n.wrapping_mul(0x9E37_79B9) + 1);
     let _ = tx.send(join_msg(&name)).await;
-    let (mut seq, mut last_snap) = (0u16, None::<Instant>);
+    let (mut tick, mut last_snap) = (0u16, None::<Instant>);
+    let (mut held, mut fire, mut change_at) = (0u8, 0u8, Instant::now());
     let mut next_input = tokio::time::Instant::now();
     let mut rejoin_at: Option<tokio::time::Instant> = None;
     loop {
@@ -67,14 +68,19 @@ async fn bot(url: String, n: u64, stats: Arc<Stats>) {
             _ = tokio::time::sleep_until(wake) => {
                 if rejoin_at.take().is_some() {
                     if tx.send(join_msg(&name)).await.is_err() { break; }
+                    next_input = tokio::time::Instant::now();
                     continue;
                 }
-                seq = seq.wrapping_add(1);
-                let held = rng.range(0, 5) as u8;
-                let fire = rng.chance(40) as u8;
-                let msg = [0x02, seq as u8, (seq >> 8) as u8, held | fire << 3];
+                // One report per 50 ms tick, like the browser; the intent changes every 0.5–2 s.
+                if Instant::now() >= change_at {
+                    held = rng.range(0, 5) as u8;
+                    fire = rng.chance(40) as u8;
+                    change_at = Instant::now() + Duration::from_millis(rng.range(500, 2000) as u64);
+                }
+                tick = tick.wrapping_add(1);
+                let msg = [0x02, tick as u8, (tick >> 8) as u8, held | fire << 3];
                 if tx.send(Message::Binary(Bytes::copy_from_slice(&msg))).await.is_err() { break; }
-                next_input = tokio::time::Instant::now() + Duration::from_millis(rng.range(500, 2000) as u64);
+                next_input += Duration::from_millis(50);
             }
         }
     }

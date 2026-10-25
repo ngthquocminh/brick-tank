@@ -1,8 +1,8 @@
 # Architecture
 
 Brick Tank is one Rust process serving one shared world to every browser. The server decides
-everything; the browser sends the keys it holds and draws what it is told, predicting only its
-own tank so controls feel instant.
+everything; the browser reports what its tank was told to do on each of its ticks and draws what
+it is told, predicting only its own tank so controls feel instant.
 
 ```
  browser (client/)                       server (one process)
@@ -48,14 +48,25 @@ Wire formats are in [protocol.md](protocol.md). The reasons behind the main choi
 - **Snapshots are built in parallel** with rayon over an immutable borrow of the world, right
   after the simulation step.
 
+### Inputs (`Game::apply_inputs`)
+
+Each client sends one INPUT per client tick, numbered. The game thread queues them per client
+and, right before every simulation step, hands each tank exactly one, oldest first; the snapshot
+then acks that client tick. So the server runs every client tick once and in order, whatever the
+latency, and the client's prediction lines up with it tick for tick. When no INPUT is queued the
+tank waits: it sits the tick out entirely, which leaves it exactly where the client's history
+expects it once the late INPUT is applied. The queue is capped at 4; on overflow, or when 3 or
+more have been waiting at every tick for 40 ticks, the oldest is dropped (its fire press carries
+over), which bounds the delay other players see without ever applying two client ticks in one.
+
 ### One tick (`World::step`)
 
-1. Advance the tick counter; remove tanks with no input for 1200 ticks (AFK).
+1. Advance the tick counter; remove tanks whose input has not changed for 1200 ticks (AFK).
 2. Move tanks in two phases: each tank computes where it wants to go against walls and the open
    area, then any move whose box would overlap another tank's current or wanted box is cancelled.
-   Two tanks heading into the same cells both stay put.
-3. Fire: a tank holding fire (or that tapped fire since the last tick), with no bullet in flight
-   and not invulnerable, spawns a bullet in front of its barrel.
+   Two tanks heading into the same cells both stay put. Waiting tanks do not move or cool down.
+3. Fire: a tank whose input says fire, not waiting, with no bullet in flight and not
+   invulnerable, spawns a bullet in front of its barrel.
 4. Bullets move one cell, then are resolved in order: walls and the area edge; bullets on the same
    cell or passing through each other (both vanish); hits on non-invulnerable tanks; range.
 5. Kill credit goes to the shooter if it is still alive, even if it dies in the same tick. Hitting
@@ -76,8 +87,6 @@ Wire formats are in [protocol.md](protocol.md). The reasons behind the main choi
 - **Spawning.** 16 random spots inside the open area and the target; the one farthest from tanks
   and bullets wins. If none is free, a full scan from a random start finds any free spot. A new
   tank is invulnerable for 60 ticks (3 s): it blinks, cannot fire, and bullets pass through it.
-- **Taps.** A press is latched until the tank next acts, so a key tapped and released between two
-  ticks still turns, moves or fires.
 
 ### Boards and records
 
@@ -104,12 +113,15 @@ Plain ES modules, no framework and no build step.
 
 ### Prediction
 
-The client runs its own 50 ms tick. Each tick it applies the held input to its predicted tank and
-bullet and records `(seq, k, held)`, where `k` counts ticks under the current input `seq`. When a
-snapshot arrives with `(ack_seq, ack_ticks)`, the client finds the matching history entry, resets
-its tank to the server's, and replays the later entries. If the entry is missing (for example
-after the tab was in the background) it snaps to the server state. Other tanks and bullets are
-drawn exactly as the last snapshot shows them; who got hit is always the server's call.
+The client runs its own 50 ms tick. Each tick it decides what its tank does — the held direction,
+or a latched tap: a press is kept until the tank next acts, so a key tapped and released between
+two ticks still turns, moves or fires — applies that to its predicted tank and bullet, records
+`(tick, held)` and sends it as INPUT. When a snapshot arrives with `ack`, the client resets its
+tank to the server's and replays its history entries after `ack`. Since the server applied
+exactly the ticks up to `ack`, the replay normally lands where the tank already was; the own tank
+is only corrected when the world disagreed with the prediction (another tank in the way, the
+area edge). Other tanks and bullets are drawn exactly as the last snapshot shows them; who got
+hit is always the server's call.
 
 ### Keeping both sides in step
 

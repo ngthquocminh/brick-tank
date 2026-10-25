@@ -1,6 +1,7 @@
 # 0004 — Predict only your own tank; no lag compensation
 
-**Status:** accepted
+**Status:** accepted; the `(ack_seq, ack_ticks)` acks are superseded by
+[0008](0008-inputs-per-client-tick.md)
 
 ## Context
 
