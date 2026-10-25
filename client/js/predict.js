@@ -40,13 +40,14 @@ export class Predictor {
     this.tick = (this.tick + 1) & 0xffff;
     const entry = { tick: this.tick, held, fired: false };
     stepMove(this.tank, held, blocked);
+    // Like the server: a bullet that ends this tick still blocks firing until the next one.
     const b = this.bullet;
     if (b) {
       b.x += DELTA[b.dir][0];
       b.y += DELTA[b.dir][1];
       if (--b.range <= 0 || bulletBlocked(b.x, b.y)) this.bullet = null;
     }
-    if (fire && canFire && !this.bullet) {
+    if (fire && canFire && !b) {
       const [x, y] = muzzle(this.tank.x, this.tank.y, this.tank.dir);
       if (!bulletBlocked(x, y)) this.bullet = { x, y, dir: this.tank.dir, range: BULLET_RANGE };
       entry.fired = true;

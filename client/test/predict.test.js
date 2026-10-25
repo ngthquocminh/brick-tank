@@ -67,6 +67,35 @@ test('own bullet predicted and cleared', () => {
   assert.equal(p.bullet, null);
 });
 
+// Server order (World::step): fire is checked against the bullet the tank had at the start of the
+// tick, then bullets move. So a tank cannot refire on the tick its old bullet ends.
+test('holding fire refires only the tick after the old bullet ends', () => {
+  const p = new Predictor();
+  p.reset({ x: 10, y: 10, dir: DIR.UP, cd: 0 });
+  const spawned = [];
+  for (let t = 1; t <= 28; t++) {
+    const had = p.bullet;
+    p.localTick(null, true, true, free, free);
+    if (p.bullet && p.bullet !== had) spawned.push(t);
+  }
+  // Fired on tick 1, last moves on tick 26 (25 cells), so the next shot is on tick 27.
+  assert.deepEqual(spawned, [1, 27]);
+});
+
+test('no refire on the tick the old bullet hits a wall', () => {
+  const p = new Predictor();
+  p.reset({ x: 10, y: 10, dir: DIR.UP, cd: 0 });
+  const wall = (x, y) => y <= 6;
+  p.localTick(null, true, true, free, wall);
+  assert.deepEqual([p.bullet.x, p.bullet.y], [11, 9]);
+  p.localTick(null, true, true, free, wall);
+  p.localTick(null, true, true, free, wall);
+  p.localTick(null, true, true, free, wall);
+  assert.equal(p.bullet, null, 'hit the wall on tick 4');
+  p.localTick(null, true, true, free, wall);
+  assert.deepEqual([p.bullet.x, p.bullet.y], [11, 9], 'refired on tick 5');
+});
+
 test('history is capped while no snapshots arrive', () => {
   const p = walkUp(1000);
   assert.ok(p.history.length <= 200);

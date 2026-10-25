@@ -580,6 +580,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn holding_fire_refires_the_tick_after_the_old_bullet_ends() {
+        let mut w = world();
+        let (x, y) = free_strip(&w, 32, 3);
+        let a = w.place("A".into(), x, y, Dir::Right);
+        w.set_input(a, None, true);
+        let mut spawned = Vec::new();
+        for t in 1..=28 {
+            w.step();
+            if w.bullets().iter().any(|b| b.x == x + 3) {
+                spawned.push(t);
+            }
+        }
+        assert_eq!(spawned, [1, 27], "the client predictor mirrors this");
+    }
+
+    #[test]
     fn bullet_kills_and_credits() {
         let mut w = world();
         let (x, y) = free_strip(&w, 20, 3);
